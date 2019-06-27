@@ -225,7 +225,7 @@
                 (cond
                   (:parser root)
                   (assoc root
-                         :parser (gfn (:parser root) (conj path tag)))
+                         :parser (gfn (:parser root) (conj path tag 0)))
                   (:parser1 root)
                   (assoc root
                          :parser1 (gfn (:parser1 root) (conj path tag 0))
