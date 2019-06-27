@@ -27,13 +27,28 @@
 (def text3
   "quxquxquuxquuxquuuxquuux\n")
 
-(deftest path-log-tests
+(def ord-parser
+  (insta/parser
+    "r1 = 'a' / 'b' / 'c'"))
+
+(def text4
+  "a")
+
+(def text5
+  "c")
+
+(deftest simple-path-log-tests
   (let [res1 (simple-parser text1)
         path-freqs1 (->> res1 meta :path-log frequencies)
         res2 (simple-parser text2)
         path-freqs2 (->> res2 meta :path-log frequencies)
         res3 (simple-parser text3)
-        path-freqs3 (->> res3 meta :path-log frequencies)]
+        path-freqs3 (->> res3 meta :path-log frequencies)
+
+        res4 (ord-parser text4)
+        path-freqs4 (->> res4 meta :path-log frequencies)
+        res5 (ord-parser text5)
+        path-freqs5 (->> res5 meta :path-log frequencies)]
 
     (is (= res1
            [:TOP
@@ -89,5 +104,18 @@
             [:R2] 6,
             [:R2 :alt 0] 2,
             [:R2 :alt 1] 2,
-            [:R2 :alt 2] 2}))))
+            [:R2 :alt 2] 2}))
+
+    (is (= res4
+           [:r1 "a"]))
+    (is (= path-freqs4
+           {[:r1] 1,
+            [:r1 :ord 0] 1}))
+
+    (is (= res5
+           [:r1 "c"]))
+    (is (= path-freqs5
+           {[:r1] 1,
+            [:r1 :ord 1] 1,
+            [:r1 :ord 1 :ord 1] 1}))))
 

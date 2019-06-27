@@ -220,17 +220,23 @@
 
 (defn with-path-meta
   [g]
-  (let [gfn (fn gfn [root path]
-	      (vary-meta
-		(if (:parser root)
-		  (assoc root
-		   :parser (gfn (:parser root) (conj path (:tag root))))
-		  (if (:parsers root)
-		    (assoc root
-		     :parsers (map-indexed #(gfn %2 (conj path (:tag root) %1))
-						 (:parsers root)))
-		    root))
-		assoc :path path))]
+  (let [gfn (fn gfn [{:keys [tag] :as root} path]
+              (vary-meta
+                (cond
+                  (:parser root)
+                  (assoc root
+                         :parser (gfn (:parser root) (conj path tag)))
+                  (:parser1 root)
+                  (assoc root
+                         :parser1 (gfn (:parser1 root) (conj path tag 0))
+                         :parser2 (gfn (:parser2 root) (conj path tag 1)))
+                  (:parsers root)
+                  (assoc root
+                         :parsers (map-indexed #(gfn %2 (conj path tag %1))
+                                               (:parsers root)))
+                  :else
+                  root)
+                assoc :path path))]
     (into {} (for [[nt exp] g]
                [nt (gfn exp [nt])]))))
 
