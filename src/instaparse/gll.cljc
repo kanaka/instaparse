@@ -218,10 +218,10 @@
    :cljs
    (def sub-sequence subs))
 
-(defn with-path-meta
+(defn grammar-with-paths
   [g]
   (let [gfn (fn gfn [{:keys [tag] :as root} path]
-              (vary-meta
+              (assoc
                 (cond
                   (:parser root)
                   (assoc root
@@ -236,9 +236,16 @@
                                                (:parsers root)))
                   :else
                   root)
-                assoc :path path))]
+                :path path))]
     (into {} (for [[nt exp] g]
                [nt (gfn exp [nt])]))))
+
+(defn conj-flat-with-path-log
+  [results new-result]
+  (let [path-log (concat (-> results meta :path-log)
+                         (-> new-result meta :path-log))]
+    (with-meta (afs/conj-flat results (:result new-result))
+               {:path-log path-log})))
 
 ; The trampoline structure contains the grammar, text to parse, a stack and a nodes
 ; Also contains an atom to hold successes and one to hold index of failure point.
@@ -251,18 +258,16 @@
 
 (defrecord Tramp [grammar text segment fail-index node-builder
                   stack next-stack generation negative-listeners 
-                  msg-cache nodes success failure trace?
-                  path-log])
+                  msg-cache nodes success failure trace?])
 (defn make-tramp 
   ([grammar text] (make-tramp grammar text (text->segment text) -1 nil))
   ([grammar text segment] (make-tramp grammar text segment -1 nil))
   ([grammar text fail-index node-builder] (make-tramp grammar text (text->segment text) fail-index node-builder))
   ([grammar text segment fail-index node-builder]
-    (Tramp. (with-path-meta grammar) text segment
+    (Tramp. (grammar-with-paths grammar) text segment
             fail-index node-builder
             (atom []) (atom []) (atom 0) (atom (sorted-map-by >)) 
-            (atom {}) (atom {}) (atom nil) (atom (Failure. 0 [])) (trace-or-false)
-            (atom []))))
+            (atom {}) (atom {}) (atom nil) (atom (Failure. 0 [])) (trace-or-false))))
   
 ; A Success record contains the result and the index to continue from
 (defn make-success [result index] {:result result :index index})
@@ -348,9 +353,12 @@
         (swap! nodes assoc node-key node)
         node))))
 
+(defn meta-able? [obj]
+  #?(:clj (instance? clojure.lang.IObj obj)
+     :cljs (satisfies? cljs.core/IWithMeta obj)))
+
 (defn safe-with-meta [obj metamap]
-  (if #?(:clj (instance? clojure.lang.IObj obj)
-         :cljs (satisfies? cljs.core/IWithMeta obj))
+  (if (meta-able? obj)
     (with-meta obj metamap)
     obj))
 
@@ -371,6 +379,11 @@
   (let [node (node-get tramp node-key)
         parser (node-key 1)
         ;; reduce result with reduction function if it exists
+        path-log (or (-> result meta :path-log)
+                     (-> result :result meta :path-log))
+        new-path-log (if-let [path (:path parser)]
+                       (conj path-log path)
+                       path-log)
         result (if (:hide parser)
                  (assoc result :result nil)
                  result)
@@ -381,11 +394,10 @@
                      {::start-index (node-key 0) ::end-index (:index result)})
                    (:index result))                 
                  result)              
+        result (with-meta result (merge (meta result) {:path-log new-path-log}))
         total? (total-success? tramp result)
         results (if total? (:full-results node) (:results node))]
     (when (not (@results result))  ; when result is not already in @results
-      (when-let [path (:path (meta parser))]
-        (swap! (:path-log tramp) conj path))
       (profile (add! :push-result))
       (swap! results conj result)
       (doseq [listener @(:listeners node)]
@@ -483,10 +495,10 @@
       (cond
         @(:success tramp)
         (do (log tramp "Successful parse.\nProfile: " @stats)
-          (cons (let [obj (:result @(:success tramp))]
-                  (if (coll? obj)
-                    (merge-meta obj {:path-log @(:path-log tramp)})
-                    obj))
+          (cons (let [result @(:success tramp)
+                      obj (:result result)]
+                  (safe-with-meta obj (merge (meta obj)
+                                             {:path-log (:path-log (meta result))})))
                 (lazy-seq
                   (do (reset! (:success tramp) nil)
                     (run tramp true)))))
@@ -550,8 +562,8 @@
            :parser-sequence (map :tag parser-sequence)
            :node-key [(node-key 0) (:tag (node-key 1))]})
   (fn [result] 
-    (let [{parsed-result :result continue-index :index} result
-          new-results-so-far (afs/conj-flat results-so-far parsed-result)]
+    (let [{continue-index :index} result
+          new-results-so-far (conj-flat-with-path-log results-so-far result)]
       (if (seq parser-sequence)
         (push-listener tramp [continue-index (first parser-sequence)]
                        (CatListener new-results-so-far (next parser-sequence) node-key tramp))          
@@ -563,8 +575,8 @@
 ;           :parser-sequence (map :tag parser-sequence)
 ;           :node-key [(node-key 0) (:tag (node-key 1))]})
   (fn [result] 
-    (let [{parsed-result :result continue-index :index} result
-          new-results-so-far (afs/conj-flat results-so-far parsed-result)]
+    (let [{continue-index :index} result
+          new-results-so-far (conj-flat-with-path-log results-so-far result)]
       (cond
         (red/singleton? parser-sequence)
         (push-full-listener tramp [continue-index (first parser-sequence)]
@@ -582,11 +594,11 @@
 
 (defn PlusListener [results-so-far parser prev-index node-key tramp]
   (fn [result]
-    (let [{parsed-result :result continue-index :index} result]
+    (let [{continue-index :index} result]
       (if (= continue-index prev-index)
         (when (zero? (count results-so-far)) 
           (success tramp node-key nil continue-index))        
-        (let [new-results-so-far (afs/conj-flat results-so-far parsed-result)]
+        (let [new-results-so-far (conj-flat-with-path-log results-so-far result)]
           (push-listener tramp [continue-index parser]
                          (PlusListener new-results-so-far parser continue-index
                                        node-key tramp))            
@@ -594,11 +606,11 @@
 
 (defn PlusFullListener [results-so-far parser prev-index node-key tramp]
   (fn [result]
-    (let [{parsed-result :result continue-index :index} result]
+    (let [{continue-index :index} result]
       (if (= continue-index prev-index)
         (when (zero? (count results-so-far))
           (success tramp node-key nil continue-index))
-        (let [new-results-so-far (afs/conj-flat results-so-far parsed-result)]
+        (let [new-results-so-far (conj-flat-with-path-log results-so-far result)]
           (if (= continue-index (count (:text tramp)))
             (success tramp node-key new-results-so-far continue-index)
             (push-listener tramp [continue-index parser]
@@ -609,9 +621,9 @@
 
 (defn RepListener [results-so-far n-results-so-far parser m n prev-index node-key tramp]
   (fn [result]
-    (let [{parsed-result :result continue-index :index} result]
+    (let [{continue-index :index} result]
       ;(dprintln "Rep" (type results-so-far))
-      (let [new-results-so-far (afs/conj-flat results-so-far parsed-result)
+      (let [new-results-so-far (conj-flat-with-path-log results-so-far result)
             new-n-results-so-far (inc n-results-so-far)]
         (when (<= m new-n-results-so-far n)
           (success tramp node-key new-results-so-far continue-index))
@@ -623,9 +635,8 @@
 
 (defn RepFullListener [results-so-far n-results-so-far parser m n prev-index node-key tramp]
   (fn [result]
-    (let [{parsed-result :result continue-index :index} result]
-      ;(dprintln "RepFull" (type parsed-result))
-      (let [new-results-so-far (afs/conj-flat results-so-far parsed-result)
+    (let [{continue-index :index} result]
+      (let [new-results-so-far (conj-flat-with-path-log results-so-far result)
             new-n-results-so-far (inc n-results-so-far)]
         (if (= continue-index (count (:text tramp)))
           (when (<= m new-n-results-so-far n)
@@ -1041,10 +1052,10 @@
 
 (defn merge-meta
   "A variation on with-meta that merges the existing metamap into the new metamap,
-rather than overwriting the metamap entirely."
+  rather than overwriting the metamap entirely."
   [obj metamap]
   (with-meta obj (merge metamap (meta obj))))
-      
+
 (defn parses-total 
   [grammar start text partial? node-builder]
   (profile (clear!))
